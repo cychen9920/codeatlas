@@ -41,7 +41,8 @@ function applyIndex(data) {
   el.answer.textContent = `Indexed ${data.fileCount} files. Ask a question about the repo.`;
   el.citations.innerHTML = "Cited source snippets will appear here.";
   el.citations.classList.add("muted");
-  setStatus(`Repo indexed using ${data.retrievalMode} retrieval`);
+  const detail = data.embeddingError ? `: ${data.embeddingError}` : "";
+  setStatus(`Repo indexed using ${data.retrievalMode} retrieval${detail}`);
 }
 
 async function ask() {

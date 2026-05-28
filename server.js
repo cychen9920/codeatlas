@@ -10,6 +10,8 @@ const ROOT = process.cwd();
 const PUBLIC_DIR = join(ROOT, "public");
 const REPOS_DIR = join(ROOT, ".code-atlas", "repos");
 const EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+const EMBEDDING_BATCH_SIZE = 24;
+const GENERATE_ANSWERS = process.env.GENERATE_ANSWERS === "true";
 
 const IGNORE_DIRS = new Set([".git", ".code-atlas", "node_modules", "dist", "build", ".next", ".venv", "venv", "coverage"]);
 const CODE_EXTS = new Set([".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".java", ".rb", ".rs", ".json", ".md", ".yml", ".yaml"]);
@@ -35,7 +37,8 @@ createServer(async (req, res) => {
         id: session.id,
         fileCount: session.files.length,
         chunkCount: session.chunks.length,
-        retrievalMode: session.usesEmbeddings ? "embeddings" : "keywords"
+        retrievalMode: session.usesEmbeddings ? "embeddings" : "keywords",
+        embeddingError: session.embeddingError
       });
     }
 
@@ -145,14 +148,19 @@ async function indexRepo(repoPath) {
     }
   }
 
-  const embeddings = await embedTexts(chunks.map(chunk => chunk.embeddingText)).catch(() => null);
+  let embeddingError = null;
+  const embeddings = await embedTexts(chunks.map(chunk => chunk.embeddingText)).catch(error => {
+    embeddingError = error.message;
+    console.warn(`Embedding indexing failed: ${error.message}`);
+    return null;
+  });
   if (embeddings) {
     chunks.forEach((chunk, index) => {
       chunk.embedding = embeddings[index];
     });
   }
 
-  return { id: randomUUID(), files, chunks, usesEmbeddings: Boolean(embeddings) };
+  return { id: randomUUID(), files, chunks, usesEmbeddings: Boolean(embeddings), embeddingError };
 }
 
 async function findCodeFiles(dir, base = dir, files = []) {
@@ -185,7 +193,9 @@ async function answerQuestion(session, question) {
     snippet: trimSnippet(chunk.text)
   }));
 
-  const answer = await askOpenAI(question, citations).catch(() => null);
+  const answer = GENERATE_ANSWERS
+    ? await askOpenAI(question, citations).catch(() => null)
+    : null;
 
   return {
     answer: answer || simpleAnswer(citations),
@@ -195,7 +205,10 @@ async function answerQuestion(session, question) {
 
 async function retrieve(session, question) {
   if (session.usesEmbeddings) {
-    const [questionEmbedding] = await embedTexts([question]).catch(() => [null]);
+    const [questionEmbedding] = await embedTexts([question]).catch(error => {
+      console.warn(`Embedding question failed: ${error.message}`);
+      return [null];
+    });
     if (questionEmbedding) {
       return session.chunks
         .map(chunk => ({
@@ -233,25 +246,47 @@ async function embedTexts(texts) {
   if (!process.env.OPENAI_API_KEY || texts.length === 0) return null;
 
   const embeddings = [];
-  for (let i = 0; i < texts.length; i += 96) {
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: EMBEDDING_MODEL,
-        input: texts.slice(i, i + 96)
-      })
-    });
-
-    if (!response.ok) throw new Error("Embedding request failed");
-    const data = await response.json();
+  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
+    const data = await requestEmbeddings(texts.slice(i, i + EMBEDDING_BATCH_SIZE));
     embeddings.push(...data.data.map(item => item.embedding));
   }
 
   return embeddings;
+}
+
+async function requestEmbeddings(input, attempt = 1) {
+  const response = await fetch("https://api.openai.com/v1/embeddings", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: EMBEDDING_MODEL,
+      input
+    })
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    if (response.status === 429 && attempt <= 5) {
+      await sleep(retryDelay(message, attempt));
+      return requestEmbeddings(input, attempt + 1);
+    }
+    throw new Error(`Embedding request failed (${response.status}): ${message}`);
+  }
+
+  return response.json();
+}
+
+function retryDelay(message, attempt) {
+  const match = message.match(/try again in ([\d.]+)s/i);
+  if (match) return Math.ceil(Number(match[1]) * 1000) + 500;
+  return attempt * 2000;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function cosineSimilarity(a, b) {

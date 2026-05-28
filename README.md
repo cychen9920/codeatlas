@@ -43,6 +43,14 @@ You can also override the embedding model:
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small OPENAI_API_KEY=your_key npm run dev
 ```
 
+By default, answering is fast: the app returns the most relevant source sections without waiting for a separate LLM answer-generation call.
+
+To also generate a prose answer with OpenAI:
+
+```bash
+GENERATE_ANSWERS=true OPENAI_API_KEY=your_key npm run dev
+```
+
 ## How It Works
 
 1. Walks the repo while ignoring non-code directories.
