@@ -9,6 +9,7 @@ const PORT = Number(process.env.PORT || 5173);
 const ROOT = process.cwd();
 const PUBLIC_DIR = join(ROOT, "public");
 const REPOS_DIR = join(ROOT, ".code-atlas", "repos");
+const EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
 
 const IGNORE_DIRS = new Set([".git", ".code-atlas", "node_modules", "dist", "build", ".next", ".venv", "venv", "coverage"]);
 const CODE_EXTS = new Set([".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".java", ".rb", ".rs", ".json", ".md", ".yml", ".yaml"]);
@@ -33,7 +34,8 @@ createServer(async (req, res) => {
       return json(res, 200, {
         id: session.id,
         fileCount: session.files.length,
-        chunkCount: session.chunks.length
+        chunkCount: session.chunks.length,
+        retrievalMode: session.usesEmbeddings ? "embeddings" : "keywords"
       });
     }
 
@@ -137,12 +139,20 @@ async function indexRepo(repoPath) {
         startLine: start,
         endLine: end,
         text: chunkText,
+        embeddingText: `${file.path}\n${chunkText}`,
         tokens: tokenize(`${file.path}\n${chunkText}`)
       });
     }
   }
 
-  return { id: randomUUID(), files, chunks };
+  const embeddings = await embedTexts(chunks.map(chunk => chunk.embeddingText)).catch(() => null);
+  if (embeddings) {
+    chunks.forEach((chunk, index) => {
+      chunk.embedding = embeddings[index];
+    });
+  }
+
+  return { id: randomUUID(), files, chunks, usesEmbeddings: Boolean(embeddings) };
 }
 
 async function findCodeFiles(dir, base = dir, files = []) {
@@ -168,7 +178,7 @@ async function findCodeFiles(dir, base = dir, files = []) {
 }
 
 async function answerQuestion(session, question) {
-  const citations = retrieve(session, question).map(chunk => ({
+  const citations = (await retrieve(session, question)).map(chunk => ({
     path: chunk.path,
     startLine: chunk.startLine,
     endLine: chunk.endLine,
@@ -183,7 +193,24 @@ async function answerQuestion(session, question) {
   };
 }
 
-function retrieve(session, question) {
+async function retrieve(session, question) {
+  if (session.usesEmbeddings) {
+    const [questionEmbedding] = await embedTexts([question]).catch(() => [null]);
+    if (questionEmbedding) {
+      return session.chunks
+        .map(chunk => ({
+          ...chunk,
+          score: cosineSimilarity(questionEmbedding, chunk.embedding) + pathScore(chunk.path, question)
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+    }
+  }
+
+  return keywordRetrieve(session, question);
+}
+
+function keywordRetrieve(session, question) {
   const queryTokens = new Set(tokenize(question));
 
   return session.chunks
@@ -200,6 +227,52 @@ function retrieve(session, question) {
     .filter(chunk => chunk.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 5);
+}
+
+async function embedTexts(texts) {
+  if (!process.env.OPENAI_API_KEY || texts.length === 0) return null;
+
+  const embeddings = [];
+  for (let i = 0; i < texts.length; i += 96) {
+    const response = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: EMBEDDING_MODEL,
+        input: texts.slice(i, i + 96)
+      })
+    });
+
+    if (!response.ok) throw new Error("Embedding request failed");
+    const data = await response.json();
+    embeddings.push(...data.data.map(item => item.embedding));
+  }
+
+  return embeddings;
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function pathScore(path, question) {
+  const lowerPath = path.toLowerCase();
+  return tokenize(question).reduce((score, token) => {
+    return lowerPath.includes(token) ? score + 0.05 : score;
+  }, 0);
 }
 
 async function askOpenAI(question, citations) {
