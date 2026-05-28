@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeAtlas</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <p class="eyebrow">AI codebase explainer</p>
+        <h1>CodeAtlas</h1>
+        <p class="subhead">Index a repo, ask a question, get an answer grounded in source files.</p>
+      </header>
+
+      <section class="panel">
+        <label for="source">Repository URL or folder</label>
+        <div class="input-row">
+          <input id="source" placeholder="https://github.com/user/repo or ./local-folder" />
+          <button id="indexBtn">Index</button>
+        </div>
+        <div class="actions">
+          <span class="status" id="status">Ready</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <label for="question">Question</label>
+        <div class="input-row">
+          <input id="question" placeholder="Where is authentication handled?" />
+          <button id="askBtn">Ask</button>
+        </div>
+      </section>
+
+      <section class="panel answer-panel">
+        <h2>Answer</h2>
+        <pre id="answer">Index a repository, then ask a question about the codebase.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Sources</h2>
+        <div id="citations" class="citations muted">Cited source snippets will appear here.</div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
