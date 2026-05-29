@@ -19,7 +19,7 @@ npm run dev
 
 Then open [http://localhost:5173](http://localhost:5173).
 
-Enter a GitHub repo URL or a local folder path, click **Index**, then ask a question.
+Enter a GitHub repo URL or a local folder path, click **Index**, then ask a question or click **Summarize codebase**.
 
 ## OpenAI Embeddings And Answers
 
@@ -58,4 +58,6 @@ GENERATE_ANSWERS=true OPENAI_API_KEY=your_key npm run dev
 3. Embeds each chunk when `OPENAI_API_KEY` is set.
 4. Embeds the user question and retrieves chunks by cosine similarity.
 5. Sends those snippets to OpenAI to write the answer.
-6. Uses keyword retrieval when embeddings are unavailable.
+6. Builds a codebase summary from indexed file paths, folder counts, and representative source snippets.
+7. Optionally sends those snippets to OpenAI to write a prose answer when `GENERATE_ANSWERS=true`.
+8. Defaults to keyword retrieval when embeddings are unavailable.

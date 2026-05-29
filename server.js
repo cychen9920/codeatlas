@@ -14,7 +14,7 @@ const EMBEDDING_BATCH_SIZE = 24;
 const GENERATE_ANSWERS = process.env.GENERATE_ANSWERS === "true";
 
 const IGNORE_DIRS = new Set([".git", ".code-atlas", "node_modules", "dist", "build", ".next", ".venv", "venv", "coverage"]);
-const CODE_EXTS = new Set([".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".java", ".rb", ".rs", ".json", ".md", ".yml", ".yaml"]);
+const CODE_EXTS = new Set([".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".java", ".rb", ".rs", ".html", ".css", ".scss", ".json", ".md", ".yml", ".yaml"]);
 const STOP_WORDS = new Set(["the", "is", "a", "an", "to", "of", "in", "on", "and", "for", "with", "this", "that", "where", "what", "how", "does"]);
 
 const sessions = new Map();
@@ -49,6 +49,14 @@ createServer(async (req, res) => {
       if (!question) return json(res, 400, { error: "Ask a question about the repo." });
 
       return json(res, 200, await answerQuestion(session, String(question).trim()));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/summary") {
+      const { sessionId } = await readJson(req);
+      const session = sessions.get(sessionId);
+      if (!session) return json(res, 404, { error: "Index a repository first." });
+
+      return json(res, 200, await summarizeCodebase(session));
     }
 
     return serveStatic(res, url.pathname);
@@ -127,10 +135,16 @@ function run(command, args) {
 async function indexRepo(repoPath) {
   const files = await findCodeFiles(repoPath);
   const chunks = [];
+  const fileSummaries = [];
 
   for (const file of files) {
     const text = await readFile(file.absolutePath, "utf8").catch(() => "");
     const lines = text.split(/\r?\n/);
+    fileSummaries.push({
+      path: file.path,
+      lineCount: lines.length,
+      preview: trimSnippet(text)
+    });
 
     for (let start = 1; start <= lines.length; start += 80) {
       const end = Math.min(start + 79, lines.length);
@@ -160,7 +174,7 @@ async function indexRepo(repoPath) {
     });
   }
 
-  return { id: randomUUID(), files, chunks, usesEmbeddings: Boolean(embeddings), embeddingError };
+  return { id: randomUUID(), files, fileSummaries, chunks, usesEmbeddings: Boolean(embeddings), embeddingError };
 }
 
 async function findCodeFiles(dir, base = dir, files = []) {
@@ -203,6 +217,60 @@ async function answerQuestion(session, question) {
   };
 }
 
+async function summarizeCodebase(session) {
+  const summary = buildCodebaseSummary(session);
+  const answer = GENERATE_ANSWERS
+    ? await askOpenAI("Summarize this codebase: what it does, main files/folders, likely entrypoints, and where to start reading.", summary.citations).catch(() => null)
+    : null;
+
+  return {
+    answer: answer || formatSummary(summary),
+    citations: summary.citations
+  };
+}
+
+function buildCodebaseSummary(session) {
+  const folders = topFolders(session.fileSummaries);
+  const entrypoints = likelyEntrypoints(session.fileSummaries);
+  const importantFiles = likelyImportantFiles(session.fileSummaries, entrypoints);
+  const readingOrder = [...new Set([...entrypoints, ...importantFiles])].slice(0, 6);
+  const citations = readingOrder
+    .map(path => session.fileSummaries.find(file => file.path === path))
+    .filter(Boolean)
+    .map(file => ({
+      path: file.path,
+      startLine: 1,
+      endLine: Math.min(file.lineCount, 30),
+      snippet: file.preview
+    }));
+
+  return { folders, entrypoints, importantFiles, readingOrder, citations, fileCount: session.files.length };
+}
+
+function formatSummary(summary) {
+  const folders = summary.folders.map(item => `- ${item.name}/ (${item.count} files)`).join("\n") || "- No major folders found";
+  const entrypoints = summary.entrypoints.map(path => `- ${path}`).join("\n") || "- No obvious entrypoint found";
+  const importantFiles = summary.importantFiles.map(path => `- ${path}`).join("\n") || "- No important files identified";
+  const readingOrder = summary.readingOrder.map((path, index) => `${index + 1}. ${path}`).join("\n") || "1. Start with the cited source snippets below";
+
+  return `Codebase Summary
+
+What this repo appears to do:
+This repository contains ${summary.fileCount} indexed source/documentation files. Based on the filenames and snippets, start by inspecting the entrypoints and important files below to understand the app structure.
+
+Main folders:
+${folders}
+
+Likely entrypoints:
+${entrypoints}
+
+Important files:
+${importantFiles}
+
+Where to start reading:
+${readingOrder}`;
+}
+
 async function retrieve(session, question) {
   if (session.usesEmbeddings) {
     const [questionEmbedding] = await embedTexts([question]).catch(error => {
@@ -240,6 +308,52 @@ function keywordRetrieve(session, question) {
     .filter(chunk => chunk.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 5);
+}
+
+function topFolders(files) {
+  const counts = new Map();
+  for (const file of files) {
+    const folder = file.path.includes("/") ? file.path.split("/")[0] : ".";
+    counts.set(folder, (counts.get(folder) || 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([name, count]) => ({ name, count }));
+}
+
+function likelyEntrypoints(files) {
+  const patterns = [
+    /(^|\/)(main|index|app|server|client|router|routes)\.(js|jsx|ts|tsx|py|go|rb|java)$/i,
+    /(^|\/)(package\.json|vite\.config\.[jt]s|next\.config\.[jt]s|README\.md)$/i
+  ];
+
+  return files
+    .map(file => ({ ...file, score: patterns.reduce((score, pattern) => score + (pattern.test(file.path) ? 1 : 0), 0) }))
+    .filter(file => file.score > 0)
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, 5)
+    .map(file => file.path);
+}
+
+function likelyImportantFiles(files, entrypoints) {
+  const entrypointSet = new Set(entrypoints);
+  const importantWords = /auth|api|route|model|schema|service|controller|store|db|config|middleware|component|page|view/i;
+
+  return files
+    .filter(file => !entrypointSet.has(file.path))
+    .map(file => ({
+      ...file,
+      score:
+        (importantWords.test(file.path) ? 3 : 0) +
+        (file.path.toLowerCase().includes("readme") ? 2 : 0) +
+        Math.min(file.lineCount / 120, 2)
+    }))
+    .filter(file => file.score > 0)
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, 6)
+    .map(file => file.path);
 }
 
 async function embedTexts(texts) {

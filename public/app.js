@@ -7,6 +7,7 @@ const el = {
   source: document.querySelector("#source"),
   indexBtn: document.querySelector("#indexBtn"),
   askBtn: document.querySelector("#askBtn"),
+  summaryBtn: document.querySelector("#summaryBtn"),
   question: document.querySelector("#question"),
   answer: document.querySelector("#answer"),
   citations: document.querySelector("#citations")
@@ -14,6 +15,7 @@ const el = {
 
 el.indexBtn.addEventListener("click", indexRepo);
 el.askBtn.addEventListener("click", ask);
+el.summaryBtn.addEventListener("click", summarize);
 
 el.source.addEventListener("keydown", event => {
   if (event.key === "Enter") indexRepo();
@@ -63,6 +65,18 @@ async function ask() {
   });
 }
 
+async function summarize() {
+  if (!state.sessionId) {
+    setStatus("Index a repo first.");
+    return;
+  }
+
+  await busy("Summarizing", async () => {
+    const data = await api("/api/summary", { sessionId: state.sessionId });
+    renderAnswer(data);
+  });
+}
+
 function renderAnswer(data) {
   el.answer.textContent = data.answer;
   el.citations.classList.remove("muted");
@@ -89,7 +103,7 @@ async function api(path, body) {
 }
 
 async function busy(label, fn) {
-  const buttons = [el.indexBtn, el.askBtn];
+  const buttons = [el.indexBtn, el.askBtn, el.summaryBtn];
   buttons.forEach(button => {
     button.disabled = true;
   });

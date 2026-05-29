@@ -46,6 +46,12 @@ button:disabled {
   opacity: 0.6;
 }
 
+.secondary {
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink);
+}
+
 input {
   width: 100%;
   min-height: 44px;
