@@ -9,6 +9,7 @@ CodeAtlas is a simple local AI codebase explainer. It indexes a GitHub repositor
 * Embedding retrieval when `OPENAI_API_KEY` is set
 * Keyword retrieval when no API key is set
 * Answers with cited source snippets
+* Feature file finder for questions like "what files handle auth?"
 * Optional OpenAI Responses API integration when `OPENAI_API_KEY` is set
 
 ## To Run
@@ -57,7 +58,8 @@ GENERATE_ANSWERS=true OPENAI_API_KEY=your_key npm run dev
 2. Splits each source file into line-numbered chunks.
 3. Embeds each chunk when `OPENAI_API_KEY` is set.
 4. Embeds the user question and retrieves chunks by cosine similarity.
-5. Sends those snippets to OpenAI to write the answer.
-6. Builds a codebase summary from indexed file paths, folder counts, and representative source snippets.
-7. Optionally sends those snippets to OpenAI to write a prose answer when `GENERATE_ANSWERS=true`.
-8. Defaults to keyword retrieval when embeddings are unavailable.
+5. Routes file-location questions to a ranked related-files answer.
+6. Returns cited source sections as evidence.
+7. Builds a codebase summary from indexed file paths, folder counts, and representative source snippets.
+8. Optionally sends snippets to OpenAI to write a prose answer when `GENERATE_ANSWERS=true`.
+9. Falls back to keyword retrieval when embeddings are unavailable.

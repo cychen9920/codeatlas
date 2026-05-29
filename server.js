@@ -15,7 +15,7 @@ const GENERATE_ANSWERS = process.env.GENERATE_ANSWERS === "true";
 
 const IGNORE_DIRS = new Set([".git", ".code-atlas", "node_modules", "dist", "build", ".next", ".venv", "venv", "coverage"]);
 const CODE_EXTS = new Set([".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".java", ".rb", ".rs", ".html", ".css", ".scss", ".json", ".md", ".yml", ".yaml"]);
-const STOP_WORDS = new Set(["the", "is", "a", "an", "to", "of", "in", "on", "and", "for", "with", "this", "that", "where", "what", "how", "does"]);
+const STOP_WORDS = new Set(["the", "is", "a", "an", "to", "of", "in", "on", "and", "for", "with", "this", "that", "where", "what", "which", "how", "does", "file", "files"]);
 
 const sessions = new Map();
 
@@ -200,12 +200,20 @@ async function findCodeFiles(dir, base = dir, files = []) {
 }
 
 async function answerQuestion(session, question) {
-  const citations = (await retrieve(session, question)).map(chunk => ({
+  const chunks = await retrieve(session, question);
+  const citations = chunks.map(chunk => ({
     path: chunk.path,
     startLine: chunk.startLine,
     endLine: chunk.endLine,
     snippet: trimSnippet(chunk.text)
   }));
+
+  if (answerMode(question) === "files") {
+    return {
+      answer: fileFinderAnswer(question, chunks),
+      citations
+    };
+  }
 
   const answer = GENERATE_ANSWERS
     ? await askOpenAI(question, citations).catch(() => null)
@@ -215,6 +223,76 @@ async function answerQuestion(session, question) {
     answer: answer || simpleAnswer(citations),
     citations
   };
+}
+
+function answerMode(question) {
+  const q = question.toLowerCase();
+  if (
+    /\b(what|which)\s+files?\b/.test(q) ||
+    /\bwhere\s+(is|are)\b/.test(q) ||
+    /\b(files?|code)\s+(for|related to|associated with)\b/.test(q) ||
+    /\b(would|should)\s+i\s+change\b/.test(q) ||
+    /\bimplemented\b/.test(q)
+  ) {
+    return "files";
+  }
+
+  return "snippets";
+}
+
+function fileFinderAnswer(question, chunks) {
+  const files = rankedFiles(question, chunks);
+  if (files.length === 0) {
+    return "I could not find files that look related to that feature.";
+  }
+
+  const lines = files.map((file, index) => {
+    return `${index + 1}. ${file.path}
+   Reason: ${file.reason}
+   Evidence: ${file.ranges.join(", ")}`;
+  });
+
+  return `Related files
+
+${lines.join("\n\n")}`;
+}
+
+function rankedFiles(question, chunks) {
+  const byPath = new Map();
+
+  for (const chunk of chunks) {
+    const item = byPath.get(chunk.path) || { path: chunk.path, score: 0, ranges: [], snippets: [] };
+    item.score += chunk.score || 1;
+    item.ranges.push(`${chunk.startLine}-${chunk.endLine}`);
+    item.snippets.push(chunk.text);
+    byPath.set(chunk.path, item);
+  }
+
+  return [...byPath.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(file => ({
+      ...file,
+      reason: fileReason(question, file)
+    }));
+}
+
+function fileReason(question, file) {
+  const tokens = tokenize(question);
+  const pathMatches = tokens.filter(token => file.path.toLowerCase().includes(token));
+  const text = file.snippets.join("\n").toLowerCase();
+  const textMatches = tokens.filter(token => text.includes(token) && !pathMatches.includes(token)).slice(0, 4);
+
+  if (pathMatches.length && textMatches.length) {
+    return `the file path matches "${pathMatches.join(", ")}" and the retrieved code also mentions "${textMatches.join(", ")}".`;
+  }
+  if (pathMatches.length) {
+    return `the file path matches "${pathMatches.join(", ")}", which makes it a likely place for this feature.`;
+  }
+  if (textMatches.length) {
+    return `retrieved code in this file mentions "${textMatches.join(", ")}".`;
+  }
+  return "it was one of the closest semantic matches from retrieval.";
 }
 
 async function summarizeCodebase(session) {
