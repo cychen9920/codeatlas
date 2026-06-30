@@ -33,6 +33,7 @@ async function indexRepo() {
   }
 
   await busy("Indexing repository", async () => {
+    // Indexing returns a session id that all later questions use.
     const data = await api("/api/index", { source });
     applyIndex(data);
   });
@@ -80,6 +81,8 @@ async function summarize() {
 function renderAnswer(data) {
   el.answer.textContent = data.answer;
   el.citations.classList.remove("muted");
+  // Citations are rendered separately from the answer so the user can inspect
+  // exactly which source chunks supported the result.
   el.citations.innerHTML = data.citations.length
     ? data.citations.slice(0, 5).map(citation => `
       <article class="citation">
